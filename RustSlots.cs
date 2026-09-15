@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RustSlots", "EchoChamber", "0.1.2")]
+    [Info("RustSlots", "EchoChamber", "0.1.3")]
     [Description("Rust Slot Battle: a Scrap-powered battle slot with persistent bonus and key preferences.")]
     public class RustSlots : RustPlugin
     {
@@ -114,17 +114,60 @@ namespace Oxide.Plugins
             return s;
         }
         int ScrapBalance(BasePlayer p) { return p.inventory.GetAmount(scrapDefinition.itemid); }
+        void ConsolidateScrap(BasePlayer p)
+        {
+            int stackLimit=Math.Max(1,scrapDefinition.stackable);
+            var stacks=new List<Item>();
+            stacks.AddRange(p.inventory.containerMain.itemList.Where(x=>x.info.itemid==scrapDefinition.itemid));
+            stacks.AddRange(p.inventory.containerBelt.itemList.Where(x=>x.info.itemid==scrapDefinition.itemid));
+            int targetIndex=0;
+            while(targetIndex<stacks.Count) {
+                var target=stacks[targetIndex];
+                int sourceIndex=stacks.Count-1;
+                while(target.amount<stackLimit && sourceIndex>targetIndex) {
+                    var source=stacks[sourceIndex];
+                    int moved=Math.Min(stackLimit-target.amount,source.amount);
+                    if(moved<=0) { sourceIndex--; continue; }
+                    target.amount+=moved;
+                    target.MarkDirty();
+                    if(moved==source.amount) {
+                        source.Remove();
+                        stacks.RemoveAt(sourceIndex);
+                        sourceIndex--;
+                    } else {
+                        source.amount-=moved;
+                        source.MarkDirty();
+                        sourceIndex--;
+                    }
+                }
+                targetIndex++;
+            }
+        }
         void DeliverScrap(BasePlayer p, State s)
         {
-            if(!Allowed(p) || s.PendingScrap<=0)return;
-            // Merge into existing scrap stacks first. Undelivered rewards remain persistent
-            // and are never dropped on the ground when the inventory is full.
+            if(!Allowed(p))return;
+            ConsolidateScrap(p);
+            if(s.PendingScrap<=0)return;
+            int stackLimit=Math.Max(1,scrapDefinition.stackable);
+            // Fill an existing stack directly before consuming an empty inventory slot.
+            // Undelivered rewards remain persistent and are never dropped on the ground.
             for(int i=0;i<30 && s.PendingScrap>0;i++) {
-                int amount=(int)Math.Min(s.PendingScrap,Math.Max(1,scrapDefinition.stackable));
+                var existing=p.inventory.containerMain.itemList
+                    .Concat(p.inventory.containerBelt.itemList)
+                    .FirstOrDefault(x=>x.info.itemid==scrapDefinition.itemid && x.amount<stackLimit);
+                if(existing!=null) {
+                    int added=(int)Math.Min(s.PendingScrap,stackLimit-existing.amount);
+                    existing.amount+=added;
+                    existing.MarkDirty();
+                    s.PendingScrap-=added;
+                    Save();
+                    continue;
+                }
+                int amount=(int)Math.Min(s.PendingScrap,stackLimit);
                 var item=ItemManager.CreateByName("scrap",amount);
                 if(item==null)break;
-                bool delivered=item.MoveToContainer(p.inventory.containerMain,-1,true)
-                    || item.MoveToContainer(p.inventory.containerBelt,-1,true);
+                bool delivered=item.MoveToContainer(p.inventory.containerMain,-1,false)
+                    || item.MoveToContainer(p.inventory.containerBelt,-1,false);
                 if(!delivered) { item.Remove(); break; }
                 s.PendingScrap-=amount;
                 Save();
