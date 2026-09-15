@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RustSlots", "EchoChamber", "0.1.3")]
+    [Info("RustSlots", "EchoChamber", "0.1.4")]
     [Description("Rust Slot Battle: a Scrap-powered battle slot with persistent bonus and key preferences.")]
     public class RustSlots : RustPlugin
     {
@@ -44,6 +44,14 @@ namespace Oxide.Plugins
             public int GamesPerSet = 8;
             public int SetReward = 30;
             public float SpinRefreshSeconds = 0.25f;
+            public bool EnableSounds = true;
+            public string StartSound = "assets/bundled/prefabs/fx/notice/item.select.fx.prefab";
+            public string StopSound = "assets/bundled/prefabs/fx/notice/loot.drag.drop.fx.prefab";
+            public string NavigationSound = "assets/prefabs/locks/keypad/effects/lock.code.updated.prefab";
+            public string EncounterSound = "assets/bundled/prefabs/fx/notice/item.pickup.fx.prefab";
+            public string PayoutSound = "assets/prefabs/deployable/vendingmachine/effects/vending-machine-purchase-human.prefab";
+            public string BonusSound = "assets/prefabs/deployable/research table/effects/research-success.prefab";
+            public string LoseSound = "assets/prefabs/locks/keypad/effects/lock.code.denied.prefab";
             public Dictionary<string, string> ImageUrls = new Dictionary<string, string>();
         }
         class State
@@ -72,7 +80,15 @@ namespace Oxide.Plugins
             cfg.GamesPerSet = Math.Max(1, cfg.GamesPerSet);
             cfg.SetReward = Math.Max(0, Math.Min(100000, cfg.SetReward));
             cfg.SpinRefreshSeconds = Math.Max(0.2f, cfg.SpinRefreshSeconds);
+            if (cfg.StartSound == null) cfg.StartSound = "";
+            if (cfg.StopSound == null) cfg.StopSound = "";
+            if (cfg.NavigationSound == null) cfg.NavigationSound = "";
+            if (cfg.EncounterSound == null) cfg.EncounterSound = "";
+            if (cfg.PayoutSound == null) cfg.PayoutSound = "";
+            if (cfg.BonusSound == null) cfg.BonusSound = "";
+            if (cfg.LoseSound == null) cfg.LoseSound = "";
             if (cfg.ImageUrls == null) cfg.ImageUrls = new Dictionary<string,string>();
+            SaveConfig();
         }
         void Init()
         {
@@ -114,6 +130,20 @@ namespace Oxide.Plugins
             return s;
         }
         int ScrapBalance(BasePlayer p) { return p.inventory.GetAmount(scrapDefinition.itemid); }
+        void PlaySound(BasePlayer p,string prefab)
+        {
+            if(!cfg.EnableSounds || p==null || p.net==null || p.net.connection==null || string.IsNullOrEmpty(prefab))return;
+            var effect=new Effect(prefab,p,0,Vector3.zero,Vector3.forward);
+            EffectNetwork.Send(effect,p.net.connection);
+        }
+        string ResultSound(State s)
+        {
+            if(!string.IsNullOrEmpty(s.Scene) && s.Scene.EndsWith("Lose"))return cfg.LoseSound;
+            if(s.Scene=="BonusConfirmed" || !string.IsNullOrEmpty(s.Scene) && s.Scene.EndsWith("Win"))return cfg.BonusSound;
+            if(s.Paid>0)return cfg.PayoutSound;
+            if(s.Replay)return cfg.NavigationSound;
+            return cfg.StopSound;
+        }
         void ConsolidateScrap(BasePlayer p)
         {
             int stackLimit=Math.Max(1,scrapDefinition.stackable);
@@ -226,6 +256,7 @@ namespace Oxide.Plugins
             s.NavCorrect=true; s.Order=new[]{0,1,2}.OrderBy(x=>random.Next()).ToArray();
             s.Scene=s.Role==1?"ScientistBlue":s.Role==2?"ScientistYellow":s.Role==3||s.Role==4?"ScientistGreen":s.Role==5?"ScientistRed":"";
             s.Message=s.Nav?"押し順ナビ  " + string.Join(" → ",s.Order.Select(x=>(x+1).ToString()).ToArray()):"STOPでリールを停止";
+            PlaySound(p,s.Nav?cfg.NavigationSound:!string.IsNullOrEmpty(s.Scene)?cfg.EncounterSound:cfg.StartSound);
             Save(); Draw(p);
         }
         [ConsoleCommand("slot.stop")]
@@ -248,6 +279,7 @@ namespace Oxide.Plugins
             if(s.Order[s.StopCount]!=r)s.NavCorrect=false;
             s.StopCount++; s.Stopped[r]=true;
             if(s.StopCount==3) { s.Spinning=false; Settle(s); }
+            PlaySound(p,s.Spinning?cfg.StopSound:ResultSound(s));
             Save(); if(!s.Spinning)DeliverScrap(p,s); Draw(p);
         }
         [ConsoleCommand("slot.bet")]
