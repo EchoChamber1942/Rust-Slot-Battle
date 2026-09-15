@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RustSlots", "EchoChamber", "0.1.5")]
+    [Info("RustSlots", "EchoChamber", "0.1.6")]
     [Description("Rust Slot Battle: a Scrap-powered battle slot with persistent bonus and key preferences.")]
     public class RustSlots : RustPlugin
     {
@@ -58,8 +58,9 @@ namespace Oxide.Plugins
         class State
         {
             public int CurrencyVersion;
-            public long PendingScrap;
+            public long PendingScrap, TotalPaidScrap;
             public int Bet = 3, Mode, Stage, Pending, Stocks, Round, SetGames, Event, Games, Paid;
+            public int GamesSinceBonus, BonusCount, HighestRound;
             public double Rate;
             public bool Bonus, Replay, Spinning, Nav, NavCorrect = true;
             public int[] Stops = new int[3];
@@ -270,6 +271,7 @@ namespace Oxide.Plugins
                 }
             }
             s.Replay=false; s.Paid=0; s.Games++;
+            if(!s.Bonus)s.GamesSinceBonus++;
             int target;
             if(!s.Bonus && ((s.Mode==3 && s.Pending<=1) || s.Stocks>0)) {
                 if(s.Stocks>0)s.Stocks--; target=Chance(0.12)?7:6;
@@ -335,7 +337,8 @@ namespace Oxide.Plugins
         void Settle(State s)
         {
             s.Paid=s.Role==2?11:s.Role==3||s.Role==4?6:s.Role==5?2:0;
-            s.PendingScrap+=(long)s.Paid*ScrapPerBet; s.Replay=s.Role==1;
+            long roleReward=(long)s.Paid*ScrapPerBet;
+            s.PendingScrap+=roleReward; s.TotalPaidScrap+=roleReward; s.Replay=s.Role==1;
             s.Message=s.Role==0?"次のゲームへ":s.Role==1?"REPLAY：次ゲーム無料":symbols[s.Role==2?1:s.Role==3||s.Role==4?2:3]+"  +"+(s.Paid*ScrapPerBet)+" SC";
             bool stocked=s.Nav && s.NavCorrect && s.Role==1;
             if(stocked) { Stock(s); s.Message="ナビ矛盾！ 次回BB／継続ストック獲得"; }
@@ -344,18 +347,20 @@ namespace Oxide.Plugins
                 s.SetGames++;
                 s.Scene=eventIds[s.Event]+(s.SetGames==1?"Approach":s.SetGames<cfg.GamesPerSet/2?"Attack":"Counter");
                 if(s.SetGames>=cfg.GamesPerSet) {
-                    s.PendingScrap+=(long)cfg.SetReward*ScrapPerBet;
+                    long setReward=(long)cfg.SetReward*ScrapPerBet;
+                    s.PendingScrap+=setReward; s.TotalPaidScrap+=setReward;
                     bool more=s.Stocks>0;
                     if(more)s.Stocks--; else more=Chance(s.Rate);
                     s.Scene=eventIds[s.Event]+(more?"Win":"Lose");
                     s.Message=(more?"継続！":"BB終了")+"  ROUND "+s.Round+"  セット報酬 +"+(cfg.SetReward*ScrapPerBet)+" SC";
-                    if(more) { s.Round++; s.SetGames=0; }
+                    if(more) { s.Round++; s.HighestRound=Math.Max(s.HighestRound,s.Round); s.SetGames=0; }
                     else { s.Bonus=false; s.Mode=1; s.Pending=0; s.Stage=1; }
                 }
                 return;
             }
             if(s.Role>=6) {
                 s.Bonus=true; s.Mode=0; s.Pending=0; s.Round=1; s.SetGames=0;
+                s.GamesSinceBonus=0; s.BonusCount++; s.HighestRound=Math.Max(s.HighestRound,1);
                 s.Event=s.Role==7?2:Chance(0.25)?1:0;
                 s.Rate=s.Event==0?0.66:s.Event==1?0.79:0.84;
                 if(s.Role==7) { Stock(s); if(Chance(0.05)) { s.Rate=0.89; s.Message="FREEZE 89%"; } }
@@ -432,13 +437,16 @@ namespace Oxide.Plugins
             string scene=string.IsNullOrEmpty(s.Scene)?stageIds[s.Stage]:s.Scene, url;
             if(!cfg.ImageUrls.TryGetValue(scene,out url))cfg.ImageUrls.TryGetValue(stageIds[s.Stage],out url);
             if(!string.IsNullOrEmpty(url))ui.Add(new CuiElement {Parent=Root+".Screen",Components={new CuiRawImageComponent{Url=url,Color="1 1 1 1"},new CuiRectTransformComponent{AnchorMin="0 0",AnchorMax="1 1"}}});
-            Label(ui,Root+".Screen",s.Bonus?events[s.Event]:stages[s.Stage],"0.02 0.82","0.98 1",25);
+            ui.Add(new CuiPanel {Image={Color="0.02 0.025 0.03 0.88"},RectTransform={AnchorMin="0.015 0.10",AnchorMax="0.225 0.97"}},Root+".Screen",Root+".Counter");
+            string counter="<color=#FFD35A>DATA COUNTER</color>\n\n総ゲーム  "+s.Games+"\n現在ゲーム  "+s.GamesSinceBonus+"\nBB回数  "+s.BonusCount+"\n最高ROUND  "+s.HighestRound+"\n累計払出  "+s.TotalPaidScrap+" SC";
+            Label(ui,Root+".Counter",counter,"0.04 0.02","0.96 0.98",13);
+            Label(ui,Root+".Screen",s.Bonus?events[s.Event]:stages[s.Stage],"0.24 0.82","0.98 1",25);
             string order=string.Join(" ▶ ",s.Order.Select(x=>(x+1).ToString()).ToArray());
             string title=showNav?"押し順  "+order:s.Bonus?"ROUND "+s.Round+"  /  "+s.SetGames+" GAME":scene.StartsWith("Scientist")?"立ちはだかる科学者":scene=="OmenStrong"?"警戒！":"荒廃した世界で、生き残れ。";
             string tint=s.Role==1?colors[0]:s.Role==2?colors[1]:s.Role==3||s.Role==4?colors[2]:colors[3];
             if(showNav)tint="#FFE14D";
-            Label(ui,Root+".Screen","<color="+tint+">"+title+"</color>","0.03 0.30","0.97 0.74",showNav?40:28);
-            Label(ui,Root+".Screen",s.Message,"0.02 0.01","0.98 0.25",18);
+            Label(ui,Root+".Screen","<color="+tint+">"+title+"</color>","0.24 0.30","0.98 0.74",showNav?40:28);
+            Label(ui,Root+".Screen",s.Message,"0.24 0.01","0.98 0.25",18);
             Label(ui,Root,"SC  "+ScrapBalance(p)+"   BET  "+(s.Bet*ScrapPerBet)+" SC   PAY  "+(s.Paid*ScrapPerBet)+" SC","0.03 0.39","0.97 0.45",19);
             Button(ui,"BET","slot.bet","0.035 0.025","0.17 0.095");
             Button(ui,"START","slot.start","0.19 0.025","0.38 0.095","0.55 0.2 0.07 1");
