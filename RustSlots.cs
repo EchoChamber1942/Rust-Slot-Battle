@@ -8,7 +8,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RustSlots", "EchoChamber", "0.1.4")]
+    [Info("RustSlots", "EchoChamber", "0.1.5")]
     [Description("Rust Slot Battle: a Scrap-powered battle slot with persistent bonus and key preferences.")]
     public class RustSlots : RustPlugin
     {
@@ -45,6 +45,7 @@ namespace Oxide.Plugins
             public int SetReward = 30;
             public float SpinRefreshSeconds = 0.25f;
             public bool EnableSounds = true;
+            public float SoundSequenceGap = 0.12f;
             public string StartSound = "assets/bundled/prefabs/fx/notice/item.select.fx.prefab";
             public string StopSound = "assets/bundled/prefabs/fx/notice/loot.drag.drop.fx.prefab";
             public string NavigationSound = "assets/prefabs/locks/keypad/effects/lock.code.updated.prefab";
@@ -80,6 +81,7 @@ namespace Oxide.Plugins
             cfg.GamesPerSet = Math.Max(1, cfg.GamesPerSet);
             cfg.SetReward = Math.Max(0, Math.Min(100000, cfg.SetReward));
             cfg.SpinRefreshSeconds = Math.Max(0.2f, cfg.SpinRefreshSeconds);
+            cfg.SoundSequenceGap = Math.Max(0.06f,Math.Min(0.5f,cfg.SoundSequenceGap));
             if (cfg.StartSound == null) cfg.StartSound = "";
             if (cfg.StopSound == null) cfg.StopSound = "";
             if (cfg.NavigationSound == null) cfg.NavigationSound = "";
@@ -136,13 +138,42 @@ namespace Oxide.Plugins
             var effect=new Effect(prefab,p,0,Vector3.zero,Vector3.forward);
             EffectNetwork.Send(effect,p.net.connection);
         }
-        string ResultSound(State s)
+        void PlaySoundSequence(BasePlayer p,params string[] prefabs)
         {
-            if(!string.IsNullOrEmpty(s.Scene) && s.Scene.EndsWith("Lose"))return cfg.LoseSound;
-            if(s.Scene=="BonusConfirmed" || !string.IsNullOrEmpty(s.Scene) && s.Scene.EndsWith("Win"))return cfg.BonusSound;
-            if(s.Paid>0)return cfg.PayoutSound;
-            if(s.Replay)return cfg.NavigationSound;
-            return cfg.StopSound;
+            if(!cfg.EnableSounds || p==null || prefabs==null)return;
+            ulong userId=p.userID;
+            for(int i=0;i<prefabs.Length;i++) {
+                string sound=prefabs[i];
+                if(string.IsNullOrEmpty(sound))continue;
+                if(i==0) { PlaySound(p,sound); continue; }
+                float delay=cfg.SoundSequenceGap*i;
+                timer.Once(delay,()=> {
+                    var target=BasePlayer.FindByID(userId);
+                    if(target!=null && target.IsConnected)PlaySound(target,sound);
+                });
+            }
+        }
+        void PlayStartCue(BasePlayer p,State s)
+        {
+            if(s.Nav)PlaySoundSequence(p,cfg.LoseSound,cfg.NavigationSound,cfg.NavigationSound,cfg.NavigationSound,cfg.StartSound);
+            else if(s.Scene=="ScientistBlue")PlaySoundSequence(p,cfg.StartSound,cfg.EncounterSound);
+            else if(s.Scene=="ScientistYellow")PlaySoundSequence(p,cfg.PayoutSound,cfg.EncounterSound,cfg.PayoutSound);
+            else if(s.Scene=="ScientistGreen")PlaySoundSequence(p,cfg.EncounterSound,cfg.BonusSound,cfg.EncounterSound);
+            else if(s.Scene=="ScientistRed")PlaySoundSequence(p,cfg.LoseSound,cfg.EncounterSound,cfg.LoseSound,cfg.EncounterSound);
+            else if(!string.IsNullOrEmpty(s.Scene))PlaySoundSequence(p,cfg.EncounterSound,cfg.LoseSound,cfg.EncounterSound);
+            else PlaySoundSequence(p,cfg.StartSound,cfg.StopSound);
+        }
+        void PlayResultCue(BasePlayer p,State s)
+        {
+            if(s.Scene=="OmenStrong")
+                PlaySoundSequence(p,cfg.LoseSound,cfg.EncounterSound,cfg.LoseSound,cfg.EncounterSound);
+            else if(!string.IsNullOrEmpty(s.Scene) && s.Scene.EndsWith("Lose"))
+                PlaySoundSequence(p,cfg.LoseSound,cfg.LoseSound,cfg.StopSound);
+            else if(s.Scene=="BonusConfirmed" || !string.IsNullOrEmpty(s.Scene) && s.Scene.EndsWith("Win"))
+                PlaySoundSequence(p,cfg.BonusSound,cfg.PayoutSound,cfg.NavigationSound,cfg.BonusSound);
+            else if(s.Paid>0)PlaySoundSequence(p,cfg.PayoutSound,cfg.NavigationSound);
+            else if(s.Replay)PlaySoundSequence(p,cfg.NavigationSound,cfg.NavigationSound);
+            else PlaySound(p,cfg.StopSound);
         }
         void ConsolidateScrap(BasePlayer p)
         {
@@ -256,7 +287,7 @@ namespace Oxide.Plugins
             s.NavCorrect=true; s.Order=new[]{0,1,2}.OrderBy(x=>random.Next()).ToArray();
             s.Scene=s.Role==1?"ScientistBlue":s.Role==2?"ScientistYellow":s.Role==3||s.Role==4?"ScientistGreen":s.Role==5?"ScientistRed":"";
             s.Message=s.Nav?"押し順ナビ  " + string.Join(" → ",s.Order.Select(x=>(x+1).ToString()).ToArray()):"STOPでリールを停止";
-            PlaySound(p,s.Nav?cfg.NavigationSound:!string.IsNullOrEmpty(s.Scene)?cfg.EncounterSound:cfg.StartSound);
+            PlayStartCue(p,s);
             Save(); Draw(p);
         }
         [ConsoleCommand("slot.stop")]
@@ -279,7 +310,7 @@ namespace Oxide.Plugins
             if(s.Order[s.StopCount]!=r)s.NavCorrect=false;
             s.StopCount++; s.Stopped[r]=true;
             if(s.StopCount==3) { s.Spinning=false; Settle(s); }
-            PlaySound(p,s.Spinning?cfg.StopSound:ResultSound(s));
+            if(s.Spinning)PlaySound(p,cfg.StopSound); else PlayResultCue(p,s);
             Save(); if(!s.Spinning)DeliverScrap(p,s); Draw(p);
         }
         [ConsoleCommand("slot.bet")]
@@ -395,14 +426,17 @@ namespace Oxide.Plugins
                 Label(ui,Root,"最後に F1で writecfg\n任意変更：チャット /slotkey left f3\n既存bindは上書きされます。変更前の割当を控えてください。\n設定保存だけではクライアントのキーは変わりません。\nESCの専用割当は行いません。閉じるはF11／ボタン。","0.04 0.06","0.96 0.29",16);
                 CuiHelper.AddUi(p,ui); return;
             }
-            ui.Add(new CuiPanel {Image={Color=s.Stage==3?"0.24 0.09 0.06 1":"0.10 0.16 0.20 1"},RectTransform={AnchorMin="0.035 0.46",AnchorMax="0.965 0.94"}},Root,Root+".Screen");
+            string screenColor=s.Nav?"0.34 0.23 0.015 1":s.Stage==3?"0.24 0.09 0.06 1":"0.10 0.16 0.20 1";
+            ui.Add(new CuiPanel {Image={Color=screenColor},RectTransform={AnchorMin="0.035 0.46",AnchorMax="0.965 0.94"}},Root,Root+".Screen");
             string scene=string.IsNullOrEmpty(s.Scene)?stageIds[s.Stage]:s.Scene, url;
             if(!cfg.ImageUrls.TryGetValue(scene,out url))cfg.ImageUrls.TryGetValue(stageIds[s.Stage],out url);
             if(!string.IsNullOrEmpty(url))ui.Add(new CuiElement {Parent=Root+".Screen",Components={new CuiRawImageComponent{Url=url,Color="1 1 1 1"},new CuiRectTransformComponent{AnchorMin="0 0",AnchorMax="1 1"}}});
             Label(ui,Root+".Screen",s.Bonus?events[s.Event]:stages[s.Stage],"0.02 0.82","0.98 1",25);
-            string title=s.Bonus?"ROUND "+s.Round+"  /  "+s.SetGames+" GAME":scene.StartsWith("Scientist")?"立ちはだかる科学者":scene=="OmenStrong"?"警戒！":"荒廃した世界で、生き残れ。";
+            string order=string.Join(" ▶ ",s.Order.Select(x=>(x+1).ToString()).ToArray());
+            string title=s.Nav?"押し順  "+order:s.Bonus?"ROUND "+s.Round+"  /  "+s.SetGames+" GAME":scene.StartsWith("Scientist")?"立ちはだかる科学者":scene=="OmenStrong"?"警戒！":"荒廃した世界で、生き残れ。";
             string tint=s.Role==1?colors[0]:s.Role==2?colors[1]:s.Role==3||s.Role==4?colors[2]:colors[3];
-            Label(ui,Root+".Screen","<color="+tint+">"+title+"</color>","0.03 0.30","0.97 0.74",28);
+            if(s.Nav)tint="#FFE14D";
+            Label(ui,Root+".Screen","<color="+tint+">"+title+"</color>","0.03 0.30","0.97 0.74",s.Nav?40:28);
             Label(ui,Root+".Screen",s.Message,"0.02 0.01","0.98 0.25",18);
             Label(ui,Root,"SC  "+ScrapBalance(p)+"   BET  "+(s.Bet*ScrapPerBet)+" SC   PAY  "+(s.Paid*ScrapPerBet)+" SC","0.03 0.39","0.97 0.45",19);
             Button(ui,"BET","slot.bet","0.035 0.025","0.17 0.095");
