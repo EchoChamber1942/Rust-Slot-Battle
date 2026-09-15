@@ -426,17 +426,18 @@ namespace Oxide.Plugins
                 Label(ui,Root,"最後に F1で writecfg\n任意変更：チャット /slotkey left f3\n既存bindは上書きされます。変更前の割当を控えてください。\n設定保存だけではクライアントのキーは変わりません。\nESCの専用割当は行いません。閉じるはF11／ボタン。","0.04 0.06","0.96 0.29",16);
                 CuiHelper.AddUi(p,ui); return;
             }
-            string screenColor=s.Nav?"0.34 0.23 0.015 1":s.Stage==3?"0.24 0.09 0.06 1":"0.10 0.16 0.20 1";
+            bool showNav=s.Nav && s.Spinning;
+            string screenColor=showNav?"0.34 0.23 0.015 1":s.Stage==3?"0.24 0.09 0.06 1":"0.10 0.16 0.20 1";
             ui.Add(new CuiPanel {Image={Color=screenColor},RectTransform={AnchorMin="0.035 0.46",AnchorMax="0.965 0.94"}},Root,Root+".Screen");
             string scene=string.IsNullOrEmpty(s.Scene)?stageIds[s.Stage]:s.Scene, url;
             if(!cfg.ImageUrls.TryGetValue(scene,out url))cfg.ImageUrls.TryGetValue(stageIds[s.Stage],out url);
             if(!string.IsNullOrEmpty(url))ui.Add(new CuiElement {Parent=Root+".Screen",Components={new CuiRawImageComponent{Url=url,Color="1 1 1 1"},new CuiRectTransformComponent{AnchorMin="0 0",AnchorMax="1 1"}}});
             Label(ui,Root+".Screen",s.Bonus?events[s.Event]:stages[s.Stage],"0.02 0.82","0.98 1",25);
             string order=string.Join(" ▶ ",s.Order.Select(x=>(x+1).ToString()).ToArray());
-            string title=s.Nav?"押し順  "+order:s.Bonus?"ROUND "+s.Round+"  /  "+s.SetGames+" GAME":scene.StartsWith("Scientist")?"立ちはだかる科学者":scene=="OmenStrong"?"警戒！":"荒廃した世界で、生き残れ。";
+            string title=showNav?"押し順  "+order:s.Bonus?"ROUND "+s.Round+"  /  "+s.SetGames+" GAME":scene.StartsWith("Scientist")?"立ちはだかる科学者":scene=="OmenStrong"?"警戒！":"荒廃した世界で、生き残れ。";
             string tint=s.Role==1?colors[0]:s.Role==2?colors[1]:s.Role==3||s.Role==4?colors[2]:colors[3];
-            if(s.Nav)tint="#FFE14D";
-            Label(ui,Root+".Screen","<color="+tint+">"+title+"</color>","0.03 0.30","0.97 0.74",s.Nav?40:28);
+            if(showNav)tint="#FFE14D";
+            Label(ui,Root+".Screen","<color="+tint+">"+title+"</color>","0.03 0.30","0.97 0.74",showNav?40:28);
             Label(ui,Root+".Screen",s.Message,"0.02 0.01","0.98 0.25",18);
             Label(ui,Root,"SC  "+ScrapBalance(p)+"   BET  "+(s.Bet*ScrapPerBet)+" SC   PAY  "+(s.Paid*ScrapPerBet)+" SC","0.03 0.39","0.97 0.45",19);
             Button(ui,"BET","slot.bet","0.035 0.025","0.17 0.095");
