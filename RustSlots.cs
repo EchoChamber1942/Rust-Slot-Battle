@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RustSlots", "EchoChamber", "0.1.9")]
+    [Info("RustSlots", "EchoChamber", "0.1.10")]
     [Description("Rust Slot Battle: a Scrap-powered battle slot with persistent bonus and key preferences.")]
     public class RustSlots : RustPlugin
     {
@@ -28,7 +28,6 @@ namespace Oxide.Plugins
         bool healthy;
         const int ScrapPerBet = 10;
         const string AssetBase = "https://raw.githubusercontent.com/EchoChamber1942/Rust-Slot-Battle/main/assets/";
-        const string ImageBase = AssetBase + "animations/";
         ItemDefinition scrapDefinition;
         // 0 barrel/replay, 1 lantern, 2 apple, 3 scrap, 4 red seven, 5 black Rust.
         readonly int[][] strips = {
@@ -105,18 +104,11 @@ namespace Oxide.Plugins
         void EnsureDefaultImages()
         {
             string[] scenes={"ScientistBlue","ScientistYellow","ScientistGreen","ScientistRed"};
-            string[][] files={
-                new[]{"01_shadow.jpg","02_fade.jpg","03_reveal.jpg","04_emphasis.jpg"},
-                new[]{"01_shadow.jpg","02_fade.jpg","03_reveal.jpg","04_emphasis.jpg"},
-                new[]{"01_shadow.jpg","02_fade.jpg","03_reveal.jpg","04_emphasis.jpg"},
-                new[]{"01_shadow.jpg","02_approach.jpg","03_reveal.jpg","04_emphasis.jpg"}
-            };
-            for(int s=0;s<scenes.Length;s++) {
-                for(int i=0;i<4;i++) {
-                    string key=scenes[s]+"_0"+(i+1);
-                    if(!cfg.ImageUrls.ContainsKey(key))cfg.ImageUrls[key]=ImageBase+scenes[s]+"/"+files[s][i];
-                }
-                if(!cfg.ImageUrls.ContainsKey(scenes[s]))cfg.ImageUrls[scenes[s]]=cfg.ImageUrls[scenes[s]+"_04"];
+            // Remove the retired full-background animation keys from existing configs.
+            // Role animation now uses only transparent scientist overlays.
+            foreach(string scene in scenes) {
+                cfg.ImageUrls.Remove(scene);
+                for(int i=1;i<=4;i++)cfg.ImageUrls.Remove(scene+"_0"+i);
             }
             if(!cfg.ImageUrls.ContainsKey("CabinetFrame"))cfg.ImageUrls["CabinetFrame"]=AssetBase+"ui/cabinet_frame.png";
             string[] sceneFiles={
@@ -126,6 +118,10 @@ namespace Oxide.Plugins
                 "ChinookApproach","ChinookAttack","ChinookCounter","ChinookWin","ChinookLose"
             };
             foreach(string scene in sceneFiles)if(!cfg.ImageUrls.ContainsKey(scene))cfg.ImageUrls[scene]=AssetBase+"scenes/"+scene+".jpg";
+            foreach(string scene in scenes) {
+                string key=scene+"Overlay";
+                if(!cfg.ImageUrls.ContainsKey(key))cfg.ImageUrls[key]=AssetBase+"overlays/"+scene+".png";
+            }
         }
         void Init()
         {
@@ -177,12 +173,12 @@ namespace Oxide.Plugins
             if(ImageLibrary==null)return null;
             return ImageLibrary.Call<string>("GetImage","RustSlots."+key,0UL);
         }
-        void AddImage(CuiElementContainer ui,string parent,string name,string key,string min="0 0",string max="1 1")
+        void AddImage(CuiElementContainer ui,string parent,string name,string key,string min="0 0",string max="1 1",string color="1 1 1 1")
         {
             string url;
             if(!cfg.ImageUrls.TryGetValue(key,out url) || string.IsNullOrEmpty(url))return;
             string png=CachedImage(key);
-            var image=new CuiRawImageComponent {Color="1 1 1 1"};
+            var image=new CuiRawImageComponent {Color=color};
             if(!string.IsNullOrEmpty(png) && png!="0")image.Png=png;
             else image.Url=url;
             ui.Add(new CuiElement {Name=name,Parent=parent,Components={image,new CuiRectTransformComponent{AnchorMin=min,AnchorMax=max}}});
@@ -203,8 +199,11 @@ namespace Oxide.Plugins
             if(!Allowed(p))return;
             string root=Root+".RoleAnimation";
             CuiHelper.DestroyUi(p,root);
+            string color=frame==1?"0.10 0.10 0.10 0.72":frame==2?"1 1 1 0.34":frame==3?"1 1 1 0.72":"1 1 1 1";
             var ui=new CuiElementContainer();
-            AddImage(ui,Root+".Screen",root,scene+"_0"+frame);
+            // Keep the active stage/battle scene untouched. Only the transparent
+            // scientist layer changes opacity, and it never extends outside the LCD.
+            AddImage(ui,Root+".Screen",root,scene+"Overlay","0 0","1 1",color);
             CuiHelper.AddUi(p,ui);
         }
         void PlayRoleAnimation(BasePlayer p,string scene)
@@ -587,7 +586,7 @@ namespace Oxide.Plugins
             ui.Add(new CuiPanel {Image={Color=screenColor},RectTransform={AnchorMin="0.319 0.604",AnchorMax="0.802 0.873"}},Root,Root+".Screen");
             ui.Add(new CuiPanel {Image={Color="0.055 0.055 0.052 1"},RectTransform={AnchorMin="0.348 0.222",AnchorMax="0.774 0.538"}},Root,Root+".ReelBed");
             string scene=string.IsNullOrEmpty(s.Scene)?stageIds[s.Stage]:s.Scene;
-            string imageKey=s.Bonus?BonusScene(s):scene, url;
+            string imageKey=s.Bonus?BonusScene(s):stageIds[Math.Max(0,Math.Min(stageIds.Length-1,s.Stage))], url;
             if(!cfg.ImageUrls.TryGetValue(imageKey,out url)) { imageKey=stageIds[s.Stage]; cfg.ImageUrls.TryGetValue(imageKey,out url); }
             if(!string.IsNullOrEmpty(url))AddImage(ui,Root+".Screen",Root+".SceneImage",imageKey);
             AddImage(ui,Root,Root+".CabinetFrame","CabinetFrame");
