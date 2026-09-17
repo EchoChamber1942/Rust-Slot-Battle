@@ -3,12 +3,13 @@ using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json;
 using Oxide.Core;
+using Oxide.Core.Plugins;
 using Oxide.Game.Rust.Cui;
 using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RustSlots", "EchoChamber", "0.1.6")]
+    [Info("RustSlots", "EchoChamber", "0.1.7")]
     [Description("Rust Slot Battle: a Scrap-powered battle slot with persistent bonus and key preferences.")]
     public class RustSlots : RustPlugin
     {
@@ -17,11 +18,16 @@ namespace Oxide.Plugins
         Dictionary<ulong, State> players;
         readonly HashSet<ulong> opened = new HashSet<ulong>();
         readonly HashSet<ulong> keys = new HashSet<ulong>();
+        readonly HashSet<ulong> dataDetails = new HashSet<ulong>();
+        readonly HashSet<ulong> resetConfirm = new HashSet<ulong>();
         readonly Dictionary<ulong, float> lastInput = new Dictionary<ulong, float>();
+        readonly Dictionary<ulong, int> animationTokens = new Dictionary<ulong, int>();
         readonly Dictionary<int, List<int[]>> outcomes = new Dictionary<int, List<int[]>>();
         readonly System.Random random = new System.Random();
+        [PluginReference] Plugin ImageLibrary;
         bool healthy;
         const int ScrapPerBet = 10;
+        const string ImageBase = "https://raw.githubusercontent.com/EchoChamber1942/Rust-Slot-Battle/main/assets/animations/";
         ItemDefinition scrapDefinition;
         // 0 barrel/replay, 1 lantern, 2 apple, 3 scrap, 4 red seven, 5 black Rust.
         readonly int[][] strips = {
@@ -58,9 +64,9 @@ namespace Oxide.Plugins
         class State
         {
             public int CurrencyVersion;
-            public long PendingScrap, TotalPaidScrap;
+            public long PendingScrap, TotalPaidScrap, TotalBetScrap, MaxNetScrap, BonusPaidAtStart;
             public int Bet = 3, Mode, Stage, Pending, Stocks, Round, SetGames, Event, Games, Paid;
-            public int GamesSinceBonus, BonusCount, HighestRound;
+            public int GamesSinceBonus, BonusCount, HighestRound, TotalContinues, BonusStartGame;
             public double Rate;
             public bool Bonus, Replay, Spinning, Nav, NavCorrect = true;
             public int[] Stops = new int[3];
@@ -68,11 +74,12 @@ namespace Oxide.Plugins
             public int[] Order = new[]{0,1,2};
             public int StopCount, Role;
             public string Scene = "", Message = "STARTで遊技開始";
+            public List<string> BonusHistory = new List<string>();
             public Dictionary<string,string> Keys = new Dictionary<string,string> {
                 {"start","f6"},{"left","f7"},{"center","f8"},{"right","f9"},{"bet","f10"},{"close","f11"}
             };
         }
-        protected override void LoadDefaultConfig() { cfg = new Settings(); SaveConfig(); }
+        protected override void LoadDefaultConfig() { cfg = new Settings(); EnsureDefaultImages(); SaveConfig(); }
         protected override void SaveConfig() { Config.WriteObject(cfg, true); }
         protected override void LoadConfig()
         {
@@ -91,7 +98,25 @@ namespace Oxide.Plugins
             if (cfg.BonusSound == null) cfg.BonusSound = "";
             if (cfg.LoseSound == null) cfg.LoseSound = "";
             if (cfg.ImageUrls == null) cfg.ImageUrls = new Dictionary<string,string>();
+            EnsureDefaultImages();
             SaveConfig();
+        }
+        void EnsureDefaultImages()
+        {
+            string[] scenes={"ScientistBlue","ScientistYellow","ScientistGreen","ScientistRed"};
+            string[][] files={
+                new[]{"01_shadow.jpg","02_fade.jpg","03_reveal.jpg","04_emphasis.jpg"},
+                new[]{"01_shadow.jpg","02_fade.jpg","03_reveal.jpg","04_emphasis.jpg"},
+                new[]{"01_shadow.jpg","02_fade.jpg","03_reveal.jpg","04_emphasis.jpg"},
+                new[]{"01_shadow.jpg","02_approach.jpg","03_reveal.jpg","04_emphasis.jpg"}
+            };
+            for(int s=0;s<scenes.Length;s++) {
+                for(int i=0;i<4;i++) {
+                    string key=scenes[s]+"_0"+(i+1);
+                    if(!cfg.ImageUrls.ContainsKey(key))cfg.ImageUrls[key]=ImageBase+scenes[s]+"/"+files[s][i];
+                }
+                if(!cfg.ImageUrls.ContainsKey(scenes[s]))cfg.ImageUrls[scenes[s]]=cfg.ImageUrls[scenes[s]+"_04"];
+            }
         }
         void Init()
         {
@@ -99,6 +124,10 @@ namespace Oxide.Plugins
             try {
                 players = Interface.Oxide.DataFileSystem.ReadObject<Dictionary<ulong,State>>(Name);
                 if (players == null) players = new Dictionary<ulong,State>();
+                foreach(var state in players.Values) {
+                    if(state.Keys==null)state.Keys=new State().Keys;
+                    if(state.BonusHistory==null)state.BonusHistory=new List<string>();
+                }
                 healthy = true;
             } catch (Exception e) { PrintError("Data load failed; play disabled, file preserved: " + e.Message); return; }
             scrapDefinition = ItemManager.FindItemDefinition("scrap");
@@ -121,10 +150,76 @@ namespace Oxide.Plugins
             }
             timer.Every(cfg.SpinRefreshSeconds, Tick);
         }
+        void OnServerInitialized() { RegisterImages(); }
+        void OnPluginLoaded(Plugin plugin) { if(plugin!=null && plugin.Name=="ImageLibrary")RegisterImages(); }
+        void RegisterImages()
+        {
+            if(ImageLibrary==null) {
+                Puts("ImageLibrary not found; animation images will use direct HTTPS URLs.");
+                return;
+            }
+            foreach(var pair in cfg.ImageUrls) {
+                if(string.IsNullOrEmpty(pair.Value))continue;
+                ImageLibrary.Call("AddImage",pair.Value,"RustSlots."+pair.Key,0UL);
+            }
+        }
+        string CachedImage(string key)
+        {
+            if(ImageLibrary==null)return null;
+            return ImageLibrary.Call<string>("GetImage","RustSlots."+key,0UL);
+        }
+        void AddImage(CuiElementContainer ui,string parent,string name,string key,string min="0 0",string max="1 1")
+        {
+            string url;
+            if(!cfg.ImageUrls.TryGetValue(key,out url) || string.IsNullOrEmpty(url))return;
+            string png=CachedImage(key);
+            var image=new CuiRawImageComponent {Color="1 1 1 1"};
+            if(!string.IsNullOrEmpty(png) && png!="0")image.Png=png;
+            else image.Url=url;
+            ui.Add(new CuiElement {Parent=parent,Components={image,new CuiRectTransformComponent{AnchorMin=min,AnchorMax=max}}},parent,name);
+        }
+        void CancelAnimation(BasePlayer p)
+        {
+            if(p==null)return;
+            int token;
+            animationTokens.TryGetValue(p.userID,out token);
+            animationTokens[p.userID]=token+1;
+            CuiHelper.DestroyUi(p,Root+".RoleAnimation");
+        }
+        void ShowAnimationFrame(ulong userId,string scene,int frame,int token)
+        {
+            int current;
+            if(!animationTokens.TryGetValue(userId,out current) || current!=token || !opened.Contains(userId))return;
+            var p=BasePlayer.FindByID(userId);
+            if(!Allowed(p))return;
+            string root=Root+".RoleAnimation";
+            CuiHelper.DestroyUi(p,root);
+            var ui=new CuiElementContainer();
+            AddImage(ui,Root+".Screen",root,scene+"_0"+frame);
+            CuiHelper.AddUi(p,ui);
+        }
+        void PlayRoleAnimation(BasePlayer p,string scene)
+        {
+            if(p==null || string.IsNullOrEmpty(scene) || !scene.StartsWith("Scientist"))return;
+            CancelAnimation(p);
+            int token=animationTokens[p.userID];
+            ulong userId=p.userID;
+            ShowAnimationFrame(userId,scene,1,token);
+            timer.Once(0.30f,()=>ShowAnimationFrame(userId,scene,2,token));
+            timer.Once(0.70f,()=>ShowAnimationFrame(userId,scene,3,token));
+            timer.Once(1.05f,()=>ShowAnimationFrame(userId,scene,4,token));
+            timer.Once(1.90f,()=> {
+                int current;
+                if(animationTokens.TryGetValue(userId,out current) && current==token) {
+                    var target=BasePlayer.FindByID(userId);
+                    if(target!=null)CuiHelper.DestroyUi(target,Root+".RoleAnimation");
+                }
+            });
+        }
         void Save() { if (healthy) Interface.Oxide.DataFileSystem.WriteObject(Name, players); }
         void OnServerSave() { Save(); }
         void Unload() { Save(); foreach(var p in BasePlayer.activePlayerList) CuiHelper.DestroyUi(p,Root); }
-        void OnPlayerDisconnected(BasePlayer p, string reason) { Close(p); lastInput.Remove(p.userID); Save(); }
+        void OnPlayerDisconnected(BasePlayer p, string reason) { Close(p); lastInput.Remove(p.userID); animationTokens.Remove(p.userID); Save(); }
         void OnPlayerDeath(BasePlayer p, HitInfo info) { Close(p); }
         State Get(BasePlayer p)
         {
@@ -253,7 +348,7 @@ namespace Oxide.Plugins
             if(!Allowed(p)) { SendReply(p,"利用権限がないか、スロットが停止中です。"); return; }
             DeliverScrap(p, Get(p)); opened.Add(p.userID); keys.Remove(p.userID); Draw(p);
         }
-        void Close(BasePlayer p) { if(p==null)return; opened.Remove(p.userID); keys.Remove(p.userID); CuiHelper.DestroyUi(p,Root); }
+        void Close(BasePlayer p) { if(p==null)return; CancelAnimation(p); opened.Remove(p.userID); keys.Remove(p.userID); dataDetails.Remove(p.userID); resetConfirm.Remove(p.userID); CuiHelper.DestroyUi(p,Root); }
         [ConsoleCommand("slot.close")]
         void CmdClose(ConsoleSystem.Arg arg) { Close(arg.Player()); }
         [ConsoleCommand("slot.start")]
@@ -269,6 +364,7 @@ namespace Oxide.Plugins
                     s.PendingScrap+=Math.Max(0,taken); Save(); DeliverScrap(p,s);
                     s.Message="支払未成立：回収分を返却／未受取へ保存"; Draw(p); return;
                 }
+                s.TotalBetScrap+=cost;
             }
             s.Replay=false; s.Paid=0; s.Games++;
             if(!s.Bonus)s.GamesSinceBonus++;
@@ -291,6 +387,7 @@ namespace Oxide.Plugins
             s.Message=s.Nav?"押し順ナビ  " + string.Join(" → ",s.Order.Select(x=>(x+1).ToString()).ToArray()):"STOPでリールを停止";
             PlayStartCue(p,s);
             Save(); Draw(p);
+            if(!s.Nav)PlayRoleAnimation(p,s.Scene);
         }
         [ConsoleCommand("slot.stop")]
         void CmdStop(ConsoleSystem.Arg arg)
@@ -311,7 +408,7 @@ namespace Oxide.Plugins
             var s=Get(p); if(!s.Spinning || s.Stopped[r])return;
             if(s.Order[s.StopCount]!=r)s.NavCorrect=false;
             s.StopCount++; s.Stopped[r]=true;
-            if(s.StopCount==3) { s.Spinning=false; Settle(s); }
+            if(s.StopCount==3) { CancelAnimation(p); s.Spinning=false; Settle(s); }
             if(s.Spinning)PlaySound(p,cfg.StopSound); else PlayResultCue(p,s);
             Save(); if(!s.Spinning)DeliverScrap(p,s); Draw(p);
         }
@@ -334,11 +431,21 @@ namespace Oxide.Plugins
         }
         bool Chance(double probability) { return random.NextDouble()<probability; }
         void Stock(State s) { s.Stocks=Math.Min(cfg.MaxStocks,s.Stocks+1); }
+        void UpdateMaxNet(State s) { s.MaxNetScrap=Math.Max(s.MaxNetScrap,s.TotalPaidScrap-s.TotalBetScrap); }
+        void RecordBonusEnd(State s)
+        {
+            if(s.BonusHistory==null)s.BonusHistory=new List<string>();
+            long paid=Math.Max(0,s.TotalPaidScrap-s.BonusPaidAtStart);
+            string record="G"+s.BonusStartGame+"  "+events[Math.Max(0,Math.Min(events.Length-1,s.Event))]+"  R"+s.Round+"  +"+paid+" SC";
+            s.BonusHistory.Insert(0,record);
+            if(s.BonusHistory.Count>8)s.BonusHistory.RemoveRange(8,s.BonusHistory.Count-8);
+        }
         void Settle(State s)
         {
             s.Paid=s.Role==2?11:s.Role==3||s.Role==4?6:s.Role==5?2:0;
             long roleReward=(long)s.Paid*ScrapPerBet;
             s.PendingScrap+=roleReward; s.TotalPaidScrap+=roleReward; s.Replay=s.Role==1;
+            UpdateMaxNet(s);
             s.Message=s.Role==0?"次のゲームへ":s.Role==1?"REPLAY：次ゲーム無料":symbols[s.Role==2?1:s.Role==3||s.Role==4?2:3]+"  +"+(s.Paid*ScrapPerBet)+" SC";
             bool stocked=s.Nav && s.NavCorrect && s.Role==1;
             if(stocked) { Stock(s); s.Message="ナビ矛盾！ 次回BB／継続ストック獲得"; }
@@ -349,18 +456,20 @@ namespace Oxide.Plugins
                 if(s.SetGames>=cfg.GamesPerSet) {
                     long setReward=(long)cfg.SetReward*ScrapPerBet;
                     s.PendingScrap+=setReward; s.TotalPaidScrap+=setReward;
+                    UpdateMaxNet(s);
                     bool more=s.Stocks>0;
                     if(more)s.Stocks--; else more=Chance(s.Rate);
                     s.Scene=eventIds[s.Event]+(more?"Win":"Lose");
                     s.Message=(more?"継続！":"BB終了")+"  ROUND "+s.Round+"  セット報酬 +"+(cfg.SetReward*ScrapPerBet)+" SC";
-                    if(more) { s.Round++; s.HighestRound=Math.Max(s.HighestRound,s.Round); s.SetGames=0; }
-                    else { s.Bonus=false; s.Mode=1; s.Pending=0; s.Stage=1; }
+                    if(more) { s.TotalContinues++; s.Round++; s.HighestRound=Math.Max(s.HighestRound,s.Round); s.SetGames=0; }
+                    else { RecordBonusEnd(s); s.Bonus=false; s.Mode=1; s.Pending=0; s.Stage=1; }
                 }
                 return;
             }
             if(s.Role>=6) {
                 s.Bonus=true; s.Mode=0; s.Pending=0; s.Round=1; s.SetGames=0;
                 s.GamesSinceBonus=0; s.BonusCount++; s.HighestRound=Math.Max(s.HighestRound,1);
+                s.BonusStartGame=s.Games; s.BonusPaidAtStart=s.TotalPaidScrap;
                 s.Event=s.Role==7?2:Chance(0.25)?1:0;
                 s.Rate=s.Event==0?0.66:s.Event==1?0.79:0.84;
                 if(s.Role==7) { Stock(s); if(Chance(0.05)) { s.Rate=0.89; s.Message="FREEZE 89%"; } }
@@ -380,6 +489,30 @@ namespace Oxide.Plugins
                 if(Chance(0.08))s.Stage=random.Next(4);
             }
             if(s.Mode==3 && s.Pending<6 || Chance(0.03))s.Scene="OmenStrong";
+        }
+        [ConsoleCommand("slot.data")]
+        void CmdData(ConsoleSystem.Arg arg)
+        {
+            var p=arg.Player(); if(!Input(p))return;
+            resetConfirm.Remove(p.userID);
+            if(!dataDetails.Add(p.userID))dataDetails.Remove(p.userID);
+            Draw(p);
+        }
+        [ConsoleCommand("slot.reset")]
+        void CmdReset(ConsoleSystem.Arg arg)
+        {
+            var p=arg.Player(); if(!Input(p))return;
+            var s=Get(p);
+            if(s.Spinning || s.Bonus) { SendReply(p,"回転中またはBB中はデータをリセットできません。"); return; }
+            string action=arg.Args!=null && arg.Args.Length>0?arg.Args[0]:"ask";
+            if(action=="cancel") { resetConfirm.Remove(p.userID); Draw(p); return; }
+            if(action!="confirm" || !resetConfirm.Contains(p.userID)) { resetConfirm.Add(p.userID); Draw(p); return; }
+            s.Games=0; s.GamesSinceBonus=0; s.BonusCount=0; s.HighestRound=0;
+            s.TotalPaidScrap=0; s.TotalBetScrap=0; s.MaxNetScrap=0; s.TotalContinues=0;
+            s.BonusStartGame=0; s.BonusPaidAtStart=0;
+            if(s.BonusHistory==null)s.BonusHistory=new List<string>(); else s.BonusHistory.Clear();
+            s.Message="統計データをリセットしました";
+            resetConfirm.Remove(p.userID); dataDetails.Remove(p.userID); Save(); Draw(p);
         }
         [ConsoleCommand("slot.keys")]
         void CmdKeys(ConsoleSystem.Arg arg) { var p=arg.Player(); if(!Input(p))return; if(!keys.Add(p.userID))keys.Remove(p.userID); Draw(p); }
@@ -419,10 +552,11 @@ namespace Oxide.Plugins
         void Draw(BasePlayer p)
         {
             var s=Get(p); CuiHelper.DestroyUi(p,Root); var ui=new CuiElementContainer();
-            ui.Add(new CuiPanel {Image={Color="0.055 0.065 0.08 0.99"},RectTransform={AnchorMin="0.24 0.04",AnchorMax="0.76 0.96"},CursorEnabled=true},"Overlay",Root);
-            Label(ui,Root,"RUST SLOT BATTLE  /  SCRAP", "0.02 0.94","0.75 1",20);
-            Button(ui,"閉じる","slot.close","0.84 0.95","0.98 0.99");
-            Button(ui,keys.Contains(p.userID)?"戻る":"キー設定","slot.keys","0.65 0.95","0.82 0.99");
+            ui.Add(new CuiPanel {Image={Color="0.075 0.06 0.05 0.985"},RectTransform={AnchorMin="0.035 0.035",AnchorMax="0.965 0.965"},CursorEnabled=true},"Overlay",Root);
+            ui.Add(new CuiPanel {Image={Color="0.28 0.12 0.035 1"},RectTransform={AnchorMin="0 0.935",AnchorMax="1 1"}},Root);
+            Label(ui,Root,"RUST SLOT BATTLE  /  SCRAP", "0.22 0.94","0.67 0.995",22);
+            Button(ui,"閉じる","slot.close","0.88 0.947","0.985 0.99");
+            Button(ui,keys.Contains(p.userID)?"戻る":"キー設定","slot.keys","0.76 0.947","0.87 0.99");
             if(keys.Contains(p.userID)) {
                 Label(ui,Root,"個別キー設定（F1で各bindを実行）","0.03 0.84","0.97 0.93",20);
                 Button(ui,"F6～F11 初期設定","slot.preset default","0.05 0.75","0.48 0.82");
@@ -433,32 +567,61 @@ namespace Oxide.Plugins
             }
             bool showNav=s.Nav && s.Spinning;
             string screenColor=showNav?"0.34 0.23 0.015 1":s.Stage==3?"0.24 0.09 0.06 1":"0.10 0.16 0.20 1";
-            ui.Add(new CuiPanel {Image={Color=screenColor},RectTransform={AnchorMin="0.035 0.46",AnchorMax="0.965 0.94"}},Root,Root+".Screen");
-            string scene=string.IsNullOrEmpty(s.Scene)?stageIds[s.Stage]:s.Scene, url;
-            if(!cfg.ImageUrls.TryGetValue(scene,out url))cfg.ImageUrls.TryGetValue(stageIds[s.Stage],out url);
-            if(!string.IsNullOrEmpty(url))ui.Add(new CuiElement {Parent=Root+".Screen",Components={new CuiRawImageComponent{Url=url,Color="1 1 1 1"},new CuiRectTransformComponent{AnchorMin="0 0",AnchorMax="1 1"}}});
-            ui.Add(new CuiPanel {Image={Color="0.02 0.025 0.03 0.88"},RectTransform={AnchorMin="0.015 0.10",AnchorMax="0.225 0.97"}},Root+".Screen",Root+".Counter");
-            string counter="<color=#FFD35A>DATA COUNTER</color>\n\n総ゲーム  "+s.Games+"\n現在ゲーム  "+s.GamesSinceBonus+"\nBB回数  "+s.BonusCount+"\n最高ROUND  "+s.HighestRound+"\n累計払出  "+s.TotalPaidScrap+" SC";
-            Label(ui,Root+".Counter",counter,"0.04 0.02","0.96 0.98",13);
-            Label(ui,Root+".Screen",s.Bonus?events[s.Event]:stages[s.Stage],"0.24 0.82","0.98 1",25);
+            ui.Add(new CuiPanel {Image={Color="0.025 0.025 0.025 1"},RectTransform={AnchorMin="0.215 0.145",AnchorMax="0.985 0.93"}},Root);
+            ui.Add(new CuiPanel {Image={Color=screenColor},RectTransform={AnchorMin="0.23 0.485",AnchorMax="0.97 0.915"}},Root,Root+".Screen");
+            string scene=string.IsNullOrEmpty(s.Scene)?stageIds[s.Stage]:s.Scene, imageKey=scene, url;
+            if(!cfg.ImageUrls.TryGetValue(imageKey,out url)) { imageKey=stageIds[s.Stage]; cfg.ImageUrls.TryGetValue(imageKey,out url); }
+            if(!string.IsNullOrEmpty(url))AddImage(ui,Root+".Screen",Root+".SceneImage",imageKey);
+            ui.Add(new CuiPanel {Image={Color="0.025 0.035 0.04 0.98"},RectTransform={AnchorMin="0.012 0.18",AnchorMax="0.20 0.915"}},Root,Root+".Counter");
+            ui.Add(new CuiPanel {Image={Color="0.05 0.58 0.65 0.9"},RectTransform={AnchorMin="0.025 0.89",AnchorMax="0.975 0.98"}},Root+".Counter");
+            Label(ui,Root+".Counter","DATA COUNTER","0.03 0.89","0.97 0.98",18);
+            string counter="総ゲーム\n<color=#42E5F5>"+s.Games+"</color>\n\n現在ゲーム\n<color=#42E5F5>"+s.GamesSinceBonus+"</color>\n\nBB回数  <color=#FFD35A>"+s.BonusCount+"</color>\n最高ROUND  <color=#72F06A>"+s.HighestRound+"</color>\n\n累計払出\n<color=#FFD35A>"+s.TotalPaidScrap+" SC</color>";
+            Label(ui,Root+".Counter",counter,"0.04 0.24","0.96 0.88",15);
+            Button(ui,"詳細","slot.data","0.028 0.255","0.184 0.305","0.04 0.36 0.40 1");
+            Button(ui,"リセット","slot.reset ask","0.028 0.195","0.184 0.245","0.40 0.16 0.08 1");
+            Label(ui,Root+".Screen",s.Bonus?events[s.Event]:stages[s.Stage],"0.02 0.82","0.98 1",25);
             string order=string.Join(" ▶ ",s.Order.Select(x=>(x+1).ToString()).ToArray());
             string title=showNav?"押し順  "+order:s.Bonus?"ROUND "+s.Round+"  /  "+s.SetGames+" GAME":scene.StartsWith("Scientist")?"立ちはだかる科学者":scene=="OmenStrong"?"警戒！":"荒廃した世界で、生き残れ。";
             string tint=s.Role==1?colors[0]:s.Role==2?colors[1]:s.Role==3||s.Role==4?colors[2]:colors[3];
             if(showNav)tint="#FFE14D";
-            Label(ui,Root+".Screen","<color="+tint+">"+title+"</color>","0.24 0.30","0.98 0.74",showNav?40:28);
-            Label(ui,Root+".Screen",s.Message,"0.24 0.01","0.98 0.25",18);
-            Label(ui,Root,"SC  "+ScrapBalance(p)+"   BET  "+(s.Bet*ScrapPerBet)+" SC   PAY  "+(s.Paid*ScrapPerBet)+" SC","0.03 0.39","0.97 0.45",19);
-            Button(ui,"BET","slot.bet","0.035 0.025","0.17 0.095");
-            Button(ui,"START","slot.start","0.19 0.025","0.38 0.095","0.55 0.2 0.07 1");
-            for(int i=0;i<3;i++)Button(ui,"STOP "+(i+1),"slot.stop "+(i+1),XY(0.40+i*0.19,0.025),XY(0.57+i*0.19,0.095),"0.45 0.12 0.12 1");
-            if(s.PendingScrap>0) Button(ui,"未受取 "+s.PendingScrap+" SC：受取","slot.claim","0.035 0.87","0.48 0.93");
-            Label(ui,Root,"有効ライン："+(s.Bet==1?"中段1本":s.Bet==2?"横3本":"横3本＋斜め2本"),"0.03 0.10","0.97 0.145",14);
-            CuiHelper.AddUi(p,ui); DrawReels(p);
+            Label(ui,Root+".Screen","<color="+tint+">"+title+"</color>","0.02 0.30","0.98 0.74",showNav?40:28);
+            Label(ui,Root+".Screen",s.Message,"0.02 0.01","0.98 0.25",18);
+            Label(ui,Root,"SC  "+ScrapBalance(p)+"     BET  "+(s.Bet*ScrapPerBet)+" SC     PAY  "+(s.Paid*ScrapPerBet)+" SC","0.23 0.105","0.97 0.145",18);
+            Button(ui,"BET","slot.bet","0.225 0.025","0.305 0.095","0.24 0.22 0.18 1");
+            Button(ui,"START","slot.start","0.315 0.025","0.455 0.095","0.62 0.18 0.055 1");
+            for(int i=0;i<3;i++)Button(ui,"STOP "+(i+1),"slot.stop "+(i+1),XY(0.49+i*0.16,0.025),XY(0.63+i*0.16,0.095),"0.50 0.09 0.07 1");
+            if(s.PendingScrap>0) Button(ui,"未受取 "+s.PendingScrap+" SC：受取","slot.claim","0.225 0.92","0.54 0.96");
+            Label(ui,Root,"有効ライン："+(s.Bet==1?"中段1本":s.Bet==2?"横3本":"横3本＋斜め2本"),"0.49 0.105","0.97 0.145",13);
+            if(dataDetails.Contains(p.userID))DrawDataDetails(ui,p,s);
+            if(resetConfirm.Contains(p.userID))DrawResetConfirm(ui);
+            CuiHelper.AddUi(p,ui);
+            if(!dataDetails.Contains(p.userID) && !resetConfirm.Contains(p.userID))DrawReels(p);
+        }
+        void DrawDataDetails(CuiElementContainer ui,BasePlayer p,State s)
+        {
+            ui.Add(new CuiPanel {Image={Color="0.025 0.03 0.035 0.995"},RectTransform={AnchorMin="0.215 0.145",AnchorMax="0.985 0.93"}},Root,Root+".DataDetails");
+            Label(ui,Root+".DataDetails","<color=#42E5F5>PLAY DATA</color>","0.05 0.88","0.75 0.98",28);
+            Button(ui,"戻る","slot.data","0.82 0.84","0.96 0.90","0.04 0.36 0.40 1");
+            long net=s.TotalPaidScrap-s.TotalBetScrap;
+            string rate=s.BonusCount>0?((double)s.Games/s.BonusCount).ToString("0.0"):"---";
+            string left="総回転       "+s.Games+" G\n現在ゲーム   "+s.GamesSinceBonus+" G\n投入SC       "+s.TotalBetScrap+"\n払出SC       "+s.TotalPaidScrap+"\n差SC         "+(net>=0?"+":"")+net;
+            string right="BB回数       "+s.BonusCount+"\n初当り確率   1 / "+rate+"\n継続回数     "+s.TotalContinues+"\n最高ROUND    "+s.HighestRound+"\n最高差SC     +"+s.MaxNetScrap;
+            Label(ui,Root+".DataDetails",left,"0.06 0.46","0.48 0.84",20);
+            Label(ui,Root+".DataDetails",right,"0.52 0.46","0.94 0.84",20);
+            string history=s.BonusHistory!=null && s.BonusHistory.Count>0?string.Join("\n",s.BonusHistory.Take(5).ToArray()):"履歴はまだありません";
+            Label(ui,Root+".DataDetails","<color=#FFD35A>直近BB履歴</color>\n\n"+history,"0.08 0.10","0.92 0.44",17);
+        }
+        void DrawResetConfirm(CuiElementContainer ui)
+        {
+            ui.Add(new CuiPanel {Image={Color="0.08 0.045 0.03 0.995"},RectTransform={AnchorMin="0.34 0.34",AnchorMax="0.82 0.69"}},Root,Root+".ResetConfirm");
+            Label(ui,Root+".ResetConfirm","<color=#FFCC66>統計データをリセットしますか？</color>\n\n所持SC・BB・REPLAY・ストック・キー設定は消えません。","0.06 0.36","0.94 0.90",19);
+            Button(ui,"リセット実行","slot.reset confirm","0.39 0.37","0.56 0.43","0.55 0.12 0.06 1");
+            Button(ui,"キャンセル","slot.reset cancel","0.60 0.37","0.77 0.43","0.22 0.24 0.26 1");
         }
         void DrawReels(BasePlayer p)
         {
             var s=Get(p); var ui=new CuiElementContainer(); string root=Root+".Reels"; CuiHelper.DestroyUi(p,root);
-            ui.Add(new CuiPanel {Image={Color="0.03 0.03 0.035 1"},RectTransform={AnchorMin="0.07 0.15",AnchorMax="0.93 0.39"}},Root,root);
+            ui.Add(new CuiPanel {Image={Color="0.03 0.03 0.035 1"},RectTransform={AnchorMin="0.23 0.16",AnchorMax="0.97 0.465"}},Root,root);
             for(int r=0;r<3;r++) {
                 int pos=s.Spinning && !s.Stopped[r]?random.Next(21):s.Stops[r];
                 for(int row=0;row<3;row++) {

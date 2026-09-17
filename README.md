@@ -1,4 +1,4 @@
-# Rust Slot Battle 0.1.6 — スクラップ方式
+# Rust Slot Battle 0.1.7 — スクラップ方式
 
 Rustのスクラップを賭け、通常役・前兆・継続率バトルボーナスを楽しむ個人用CUIスロットプラグインです。
 
@@ -59,17 +59,22 @@ oxide/config/RustSlots.json：MaxStocks / GamesPerSet / SetReward / SpinRefreshS
 通常の切断／reloadでは確定停止位置と未受取額を保存する。
 インベントリとデータファイルは別保存のため、電源断・強制終了時の完全な原子性は保証しない。
 
-## 画像差し替え
-以前作成された素材ファイルはこのパッケージに含まれていない。
-ImageUrls のキーにクライアントからアクセスできる画像URLを指定。
+## 画像と4コマ演出
+青・黄・緑・赤科学者の正式採用画像は、Rustでの読込を軽くした1280×720 JPEGとして `assets/animations/` に収録。
+既定URLはプラグインが設定へ自動追加するため、通常は `RustSlots.cs` の差し替えだけで表示できる。
+ImageLibrary導入済みならサーバーキャッシュを自動利用し、未導入ならGitHubのHTTPS URLを直接表示する。
+役成立時は巨大影→フェード→色判明→強調の4コマを1.9秒で再生する。押し順ナビ発生時はナビの視認性を優先し、4コマ演出を抑制する。
+
+ImageUrls のキーに別の画像URLを指定すれば差し替え可能。
 背景：Outpost / Supermarket / Airfield / OilRig
 科学者：ScientistBlue / ScientistYellow / ScientistGreen / ScientistRed
+科学者4コマ：ScientistBlue_01～04 / ScientistYellow_01～04 / ScientistGreen_01～04 / ScientistRed_01～04
 前兆：OmenStrong
 BB告知：BonusConfirmed
 戦闘：BradleyApproach / BradleyAttack / BradleyCounter / BradleyWin / BradleyLose
 同じ接尾辞を PatrolHeli、Chinook にも使用。
 例えば "Outpost": "https://your-host/outpost.png"。
-未設定は色付き画面と文字で表示。画像指定は背景に重ねる単一シーン画像。透過多層合成、音声、復活演出、時間指定アニメは次段階。
+未設定は色付き画面と文字で表示。
 画像はJPG/PNG推奨。上部画面は一般的な16:9モニターに合わせた近似比率。
 
 ## 検証と限界
@@ -113,6 +118,14 @@ https://wiki.facepunch.com/rust/Keybinds
 - 内部ストック数や内部モードは攻略情報になるため表示しない。
 - 累計払出SCなどの新規項目は0.1.6導入後から集計を開始する。
 - 管理者用DEBUG／強制役機能は追加しない。
+
+## 0.1.7の追加
+- 大型Rust風筐体レイアウトへ変更し、データカウンターをスロット本体の左外側へ分離。
+- BET・STARTを左寄せし、STOP 1～3を各リールの直下へ配置。
+- 詳細データ画面へ投入SC、払出SC、差SC、最高差SC、初当り確率、継続回数、直近BB履歴を追加。
+- 二段階確認付きの統計リセットを追加。所持SC、未受取SC、BB、REPLAY、ストック、内部状態、キー設定は消去しない。回転中とBB中は実行不可。
+- 青REPLAY・黄LANTERN・緑APPLE・赤SCRAPの4コマ役演出を追加。
+- 画像URLを自動登録。ImageLibraryがある場合はキャッシュを利用し、無い場合は直接URLへフォールバック。
 
 ## 実サーバー確認済み
 ローカルRustサーバーでロード、スクラップ消費、通常配当、REPLAY無料遊技、回転途中および1リール停止後の画面再開を確認済み。
