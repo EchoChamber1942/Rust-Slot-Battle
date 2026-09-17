@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RustSlots", "EchoChamber", "0.1.8")]
+    [Info("RustSlots", "EchoChamber", "0.1.9")]
     [Description("Rust Slot Battle: a Scrap-powered battle slot with persistent bonus and key preferences.")]
     public class RustSlots : RustPlugin
     {
@@ -558,6 +558,11 @@ namespace Oxide.Plugins
         void Button(CuiElementContainer ui,string text,string command,string min,string max,string color="0.25 0.28 0.32 1")
         { ui.Add(new CuiButton {Button={Command=command,Color=color},Text={Text=text,FontSize=16,Align=TextAnchor.MiddleCenter},RectTransform={AnchorMin=min,AnchorMax=max}},Root); }
         string XY(double x,double y) { return x.ToString("0.####",System.Globalization.CultureInfo.InvariantCulture)+" "+y.ToString("0.####",System.Globalization.CultureInfo.InvariantCulture); }
+        string BonusScene(State s)
+        {
+            string phase=s.SetGames<=1?"Approach":s.SetGames<cfg.GamesPerSet/2?"Attack":"Counter";
+            return eventIds[Math.Max(0,Math.Min(eventIds.Length-1,s.Event))]+phase;
+        }
         void Draw(BasePlayer p)
         {
             var s=Get(p); CuiHelper.DestroyUi(p,Root); var ui=new CuiElementContainer();
@@ -581,7 +586,8 @@ namespace Oxide.Plugins
             ui.Add(new CuiPanel {Image={Color="0.018 0.025 0.028 0.99"},RectTransform={AnchorMin="0.064 0.335",AnchorMax="0.229 0.895"}},Root,Root+".Counter");
             ui.Add(new CuiPanel {Image={Color=screenColor},RectTransform={AnchorMin="0.319 0.604",AnchorMax="0.802 0.873"}},Root,Root+".Screen");
             ui.Add(new CuiPanel {Image={Color="0.055 0.055 0.052 1"},RectTransform={AnchorMin="0.348 0.222",AnchorMax="0.774 0.538"}},Root,Root+".ReelBed");
-            string scene=string.IsNullOrEmpty(s.Scene)?stageIds[s.Stage]:s.Scene, imageKey=scene, url;
+            string scene=string.IsNullOrEmpty(s.Scene)?stageIds[s.Stage]:s.Scene;
+            string imageKey=s.Bonus?BonusScene(s):scene, url;
             if(!cfg.ImageUrls.TryGetValue(imageKey,out url)) { imageKey=stageIds[s.Stage]; cfg.ImageUrls.TryGetValue(imageKey,out url); }
             if(!string.IsNullOrEmpty(url))AddImage(ui,Root+".Screen",Root+".SceneImage",imageKey);
             AddImage(ui,Root,Root+".CabinetFrame","CabinetFrame");
@@ -592,8 +598,8 @@ namespace Oxide.Plugins
             Label(ui,Root+".Counter","<color=#28E9F3>DATA COUNTER</color>","0.03 0.88","0.97 0.98",18);
             string counter="総ゲーム\n<color=#42E5F5>"+s.Games+"</color>\n\n現在ゲーム\n<color=#42E5F5>"+s.GamesSinceBonus+"</color>\n\nBB回数  <color=#FFD35A>"+s.BonusCount+"</color>\n最高ROUND  <color=#72F06A>"+s.HighestRound+"</color>\n\n累計払出\n<color=#FFD35A>"+s.TotalPaidScrap+" SC</color>";
             Label(ui,Root+".Counter",counter,"0.04 0.22","0.96 0.88",15);
-            Button(ui,"詳細","slot.data","0.078 0.405","0.216 0.455","0.04 0.36 0.40 0.94");
-            Button(ui,"リセット","slot.reset ask","0.078 0.345","0.216 0.395","0.40 0.16 0.08 0.94");
+            Button(ui,"詳細","slot.data","0.078 0.405","0.202 0.455","0.04 0.36 0.40 0.94");
+            Button(ui,"リセット","slot.reset ask","0.078 0.345","0.202 0.395","0.40 0.16 0.08 0.94");
             Label(ui,Root+".Screen",s.Bonus?events[s.Event]:stages[s.Stage],"0.02 0.82","0.98 1",25);
             string order=string.Join(" ▶ ",s.Order.Select(x=>(x+1).ToString()).ToArray());
             string title=showNav?"押し順  "+order:s.Bonus?"ROUND "+s.Round+"  /  "+s.SetGames+" GAME":scene.StartsWith("Scientist")?"立ちはだかる科学者":scene=="OmenStrong"?"警戒！":"荒廃した世界で、生き残れ。";
@@ -602,11 +608,11 @@ namespace Oxide.Plugins
             Label(ui,Root+".Screen","<color="+tint+">"+title+"</color>","0.02 0.30","0.98 0.74",showNav?40:28);
             Label(ui,Root+".Screen",s.Message,"0.02 0.01","0.98 0.25",18);
             Label(ui,Root,"SC  "+ScrapBalance(p)+"   BET "+(s.Bet*ScrapPerBet)+" SC   PAY "+(s.Paid*ScrapPerBet)+" SC","0.38 0.198","0.75 0.224",15);
-            Button(ui,"BET","slot.bet","0.257 0.438","0.313 0.54","0 0 0 0");
-            Button(ui,"START","slot.start","0.25 0.14","0.315 0.24","0 0 0 0");
-            double[] stopMin={0.382,0.506,0.646};
-            double[] stopMax={0.472,0.596,0.736};
-            for(int i=0;i<3;i++)Button(ui,"STOP "+(i+1),"slot.stop "+(i+1),XY(stopMin[i],0.087),XY(stopMax[i],0.18),"0 0 0 0");
+            Button(ui,"BET","slot.bet","0.257 0.455","0.313 0.530","0 0 0 0");
+            Button(ui,"START","slot.start","0.257 0.169","0.313 0.232","0 0 0 0");
+            double[] stopMin={0.366,0.515,0.665};
+            double[] stopMax={0.466,0.615,0.765};
+            for(int i=0;i<3;i++)Button(ui,"STOP "+(i+1),"slot.stop"+(i+1),XY(stopMin[i],0.097),XY(stopMax[i],0.190),"0 0 0 0");
             if(s.PendingScrap>0) Button(ui,"未受取 "+s.PendingScrap+" SC：受取","slot.claim","0.32 0.875","0.53 0.91","0.35 0.18 0.04 0.96");
             Label(ui,Root,"有効ライン："+(s.Bet==1?"中段1本":s.Bet==2?"横3本":"横3本＋斜め2本"),"0.38 0.178","0.75 0.198",11);
             if(dataDetails.Contains(p.userID))DrawDataDetails(ui,p,s);
@@ -638,7 +644,7 @@ namespace Oxide.Plugins
         void DrawReels(BasePlayer p)
         {
             var s=Get(p); var ui=new CuiElementContainer(); string root=Root+".Reels"; CuiHelper.DestroyUi(p,root);
-            ui.Add(new CuiPanel {Image={Color="0 0 0 0"},RectTransform={AnchorMin="0 0",AnchorMax="1 1"}},Root,root);
+            ui.Add(new CuiElement {Name=root,Parent=Root,Components={new CuiRectTransformComponent{AnchorMin="0 0",AnchorMax="1 1"}}});
             double[] reelMin={0.35,0.497,0.645};
             double[] reelMax={0.473,0.620,0.771};
             double[] rowMin={0.225,0.330,0.435};
