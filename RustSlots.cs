@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RustSlots", "EchoChamber", "0.1.10")]
+    [Info("RustSlots", "EchoChamber", "0.1.11")]
     [Description("Rust Slot Battle: a Scrap-powered battle slot with persistent bonus and key preferences.")]
     public class RustSlots : RustPlugin
     {
@@ -22,6 +22,8 @@ namespace Oxide.Plugins
         readonly HashSet<ulong> resetConfirm = new HashSet<ulong>();
         readonly Dictionary<ulong, float> lastInput = new Dictionary<ulong, float>();
         readonly Dictionary<ulong, int> animationTokens = new Dictionary<ulong, int>();
+        readonly Dictionary<ulong, int[]> reelVisualPositions = new Dictionary<ulong, int[]>();
+        readonly Dictionary<ulong, int> reelAnimationFrames = new Dictionary<ulong, int>();
         readonly Dictionary<int, List<int[]>> outcomes = new Dictionary<int, List<int[]>>();
         readonly System.Random random = new System.Random();
         [PluginReference] Plugin ImageLibrary;
@@ -49,7 +51,7 @@ namespace Oxide.Plugins
             public int MaxStocks = 10;
             public int GamesPerSet = 8;
             public int SetReward = 30;
-            public float SpinRefreshSeconds = 0.25f;
+            public float SpinRefreshSeconds = 0.06f;
             public bool EnableSounds = true;
             public float SoundSequenceGap = 0.12f;
             public string StartSound = "assets/bundled/prefabs/fx/notice/item.select.fx.prefab";
@@ -88,7 +90,9 @@ namespace Oxide.Plugins
             cfg.MaxStocks = Math.Max(1, Math.Min(100, cfg.MaxStocks));
             cfg.GamesPerSet = Math.Max(1, cfg.GamesPerSet);
             cfg.SetReward = Math.Max(0, Math.Min(100000, cfg.SetReward));
-            cfg.SpinRefreshSeconds = Math.Max(0.2f, cfg.SpinRefreshSeconds);
+            // Migrate the old 0.25 second symbol-jump setting to smooth animation.
+            if(cfg.SpinRefreshSeconds>=0.19f)cfg.SpinRefreshSeconds=0.06f;
+            cfg.SpinRefreshSeconds = Math.Max(0.04f, Math.Min(0.12f, cfg.SpinRefreshSeconds));
             cfg.SoundSequenceGap = Math.Max(0.06f,Math.Min(0.5f,cfg.SoundSequenceGap));
             if (cfg.StartSound == null) cfg.StartSound = "";
             if (cfg.StopSound == null) cfg.StopSound = "";
@@ -227,7 +231,7 @@ namespace Oxide.Plugins
         void Save() { if (healthy) Interface.Oxide.DataFileSystem.WriteObject(Name, players); }
         void OnServerSave() { Save(); }
         void Unload() { Save(); foreach(var p in BasePlayer.activePlayerList) CuiHelper.DestroyUi(p,Root); }
-        void OnPlayerDisconnected(BasePlayer p, string reason) { Close(p); lastInput.Remove(p.userID); animationTokens.Remove(p.userID); Save(); }
+        void OnPlayerDisconnected(BasePlayer p, string reason) { Close(p); lastInput.Remove(p.userID); animationTokens.Remove(p.userID); reelVisualPositions.Remove(p.userID); reelAnimationFrames.Remove(p.userID); Save(); }
         void OnPlayerDeath(BasePlayer p, HitInfo info) { Close(p); }
         State Get(BasePlayer p)
         {
@@ -356,7 +360,7 @@ namespace Oxide.Plugins
             if(!Allowed(p)) { SendReply(p,"利用権限がないか、スロットが停止中です。"); return; }
             DeliverScrap(p, Get(p)); opened.Add(p.userID); keys.Remove(p.userID); Draw(p);
         }
-        void Close(BasePlayer p) { if(p==null)return; CancelAnimation(p); opened.Remove(p.userID); keys.Remove(p.userID); dataDetails.Remove(p.userID); resetConfirm.Remove(p.userID); CuiHelper.DestroyUi(p,Root); }
+        void Close(BasePlayer p) { if(p==null)return; CancelAnimation(p); opened.Remove(p.userID); keys.Remove(p.userID); dataDetails.Remove(p.userID); resetConfirm.Remove(p.userID); reelVisualPositions.Remove(p.userID); reelAnimationFrames.Remove(p.userID); CuiHelper.DestroyUi(p,Root); }
         [ConsoleCommand("slot.close")]
         void CmdClose(ConsoleSystem.Arg arg) { Close(arg.Player()); }
         [ConsoleCommand("slot.start")]
@@ -389,6 +393,8 @@ namespace Oxide.Plugins
             if (target>=6 && s.Bet<3) pool=pool.Where(x=>Role(x,s.Bet)==target).ToList();
             s.Stops=(int[])pool[random.Next(pool.Count)].Clone();
             s.Role=Role(s.Stops,s.Bet); s.Stopped=new bool[3]; s.StopCount=0; s.Spinning=true;
+            reelVisualPositions[p.userID]=new[]{random.Next(21),random.Next(21),random.Next(21)};
+            reelAnimationFrames[p.userID]=0;
             s.Nav=s.Bet==3 && (s.Role==2 || s.Role==1) && Chance(0.22);
             s.NavCorrect=true; s.Order=new[]{0,1,2}.OrderBy(x=>random.Next()).ToArray();
             s.Scene=s.Role==1?"ScientistBlue":s.Role==2?"ScientistYellow":s.Role==3||s.Role==4?"ScientistGreen":s.Role==5?"ScientistRed":"";
@@ -416,7 +422,7 @@ namespace Oxide.Plugins
             var s=Get(p); if(!s.Spinning || s.Stopped[r])return;
             if(s.Order[s.StopCount]!=r)s.NavCorrect=false;
             s.StopCount++; s.Stopped[r]=true;
-            if(s.StopCount==3) { CancelAnimation(p); s.Spinning=false; Settle(s); }
+            if(s.StopCount==3) { CancelAnimation(p); s.Spinning=false; reelVisualPositions.Remove(p.userID); reelAnimationFrames.Remove(p.userID); Settle(s); }
             if(s.Spinning)PlaySound(p,cfg.StopSound); else PlayResultCue(p,s);
             Save(); if(!s.Spinning)DeliverScrap(p,s); Draw(p);
         }
@@ -549,7 +555,20 @@ namespace Oxide.Plugins
         {
             foreach(ulong id in opened.ToArray()) {
                 var p=BasePlayer.FindByID(id); if(!Allowed(p)) { if(p!=null)Close(p); else opened.Remove(id); continue; }
-                if(Get(p).Spinning && !keys.Contains(id))DrawReels(p);
+                var s=Get(p);
+                if(s.Spinning && !keys.Contains(id)) {
+                    int[] positions;
+                    if(!reelVisualPositions.TryGetValue(id,out positions) || positions==null || positions.Length!=3) {
+                        positions=new[]{random.Next(21),random.Next(21),random.Next(21)};
+                        reelVisualPositions[id]=positions;
+                    }
+                    int frame;
+                    reelAnimationFrames.TryGetValue(id,out frame);
+                    frame=(frame+1)%3;
+                    reelAnimationFrames[id]=frame;
+                    if(frame==0)for(int r=0;r<3;r++)if(!s.Stopped[r])positions[r]=(positions[r]+20)%21;
+                    DrawReels(p);
+                }
             }
         }
         void Label(CuiElementContainer ui,string parent,string text,string min,string max,int size=18)
@@ -646,14 +665,32 @@ namespace Oxide.Plugins
             ui.Add(new CuiElement {Name=root,Parent=Root,Components={new CuiRectTransformComponent{AnchorMin="0 0",AnchorMax="1 1"}}});
             double[] reelMin={0.35,0.497,0.645};
             double[] reelMax={0.473,0.620,0.771};
-            double[] rowMin={0.225,0.330,0.435};
-            double[] rowMax={0.330,0.435,0.535};
+            int[] positions;
+            if(!reelVisualPositions.TryGetValue(p.userID,out positions) || positions==null || positions.Length!=3)positions=new[]{0,0,0};
+            int animationFrame;
+            reelAnimationFrames.TryGetValue(p.userID,out animationFrame);
             for(int r=0;r<3;r++) {
-                int pos=s.Spinning && !s.Stopped[r]?random.Next(21):s.Stops[r];
-                for(int row=0;row<3;row++) {
-                    int sym=strips[r][(pos+row)%21];
-                    int visualRow=2-row;
-                    Label(ui,root,"<color="+colors[sym]+">"+symbols[sym]+"</color>",XY(reelMin[r],rowMin[visualRow]),XY(reelMax[r],rowMax[visualRow]),18);
+                string window=root+".Window"+r;
+                ui.Add(new CuiElement {Name=window,Parent=root,Components={
+                    new CuiImageComponent{Color="1 1 1 0"},
+                    new CuiRectTransformComponent{AnchorMin=XY(reelMin[r],0.225),AnchorMax=XY(reelMax[r],0.535)},
+                    new CuiMaskComponent{ShowMaskGraphic=false}
+                }});
+                if(s.Spinning && !s.Stopped[r]) {
+                    double travel=animationFrame/9.0;
+                    for(int row=-1;row<=2;row++) {
+                        int stripIndex=(positions[r]+row+21)%21;
+                        int sym=strips[r][stripIndex];
+                        double minY=2.0/3.0-row/3.0-travel;
+                        Label(ui,window,"<color="+colors[sym]+">"+symbols[sym]+"</color>",XY(0,minY),XY(1,minY+1.0/3.0),18);
+                    }
+                } else {
+                    int pos=s.Stops[r];
+                    for(int row=0;row<3;row++) {
+                        int sym=strips[r][(pos+row)%21];
+                        int visualRow=2-row;
+                        Label(ui,window,"<color="+colors[sym]+">"+symbols[sym]+"</color>",XY(0,visualRow/3.0),XY(1,(visualRow+1)/3.0),18);
+                    }
                 }
             }
             CuiHelper.AddUi(p,ui);
