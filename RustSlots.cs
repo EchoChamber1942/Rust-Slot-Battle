@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("RustSlots", "EchoChamber", "0.1.11")]
+    [Info("RustSlots", "EchoChamber", "0.1.12")]
     [Description("Rust Slot Battle: a Scrap-powered battle slot with persistent bonus and key preferences.")]
     public class RustSlots : RustPlugin
     {
@@ -672,7 +672,9 @@ namespace Oxide.Plugins
             for(int r=0;r<3;r++) {
                 string window=root+".Window"+r;
                 ui.Add(new CuiElement {Name=window,Parent=root,Components={
-                    new CuiImageComponent{Color="1 1 1 0"},
+                    // Unity UI Mask needs an opaque stencil graphic. The graphic
+                    // itself stays hidden through ShowMaskGraphic=false.
+                    new CuiImageComponent{Color="1 1 1 1"},
                     new CuiRectTransformComponent{AnchorMin=XY(reelMin[r],0.225),AnchorMax=XY(reelMax[r],0.535)},
                     new CuiMaskComponent{ShowMaskGraphic=false}
                 }});
